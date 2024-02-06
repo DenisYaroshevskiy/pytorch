@@ -607,7 +607,7 @@ class TestFxToOnnx(pytorch_test_common.ExportTestCase):
     def test_exported_program_torch_distributions_normal_Normal(self):
         class Model(torch.nn.Module):
             def __init__(self):
-                self.normal = torch.distributions.normal.Normal(0, 1)
+                self.register_buffer("normal", torch.distributions.normal.Normal(0, 1))
                 super().__init__()
 
             def forward(self, x):

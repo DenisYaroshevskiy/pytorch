@@ -1840,6 +1840,75 @@ def _native_batch_norm_legit_functional(
     return output, save_mean, save_rstd, new_running_mean, new_running_var
 
 
+def _get_batch_norm_reserve_tensor(
+    input: Tensor,
+    weight: Optional[Tensor],
+    bias: Optional[Tensor],
+    running_mean: Tensor,
+    running_var: Tensor,
+    eps: float,
+    cudnn_enabled: bool,
+) -> Tensor:
+    backend = torch._C._select_batch_norm_backend(input, weight, bias, running_mean, running_var, True, eps, cudnn_enabled)
+    if backend == torch._C._BatchNormBackend.Cudnn:
+        reserve_size = torch._C._get_cudnn_batch_norm_reserve_space_size(input)
+        return torch.empty(reserve_size, dtype=input.dtype, layout=input.layout, device=input.device)
+    else:
+        return Tensor()
+
+
+@register_decomposition(aten._new_batch_norm_with_update.default)
+def _new_batch_norm_with_update(
+    input: Tensor,
+    weight: Optional[Tensor],
+    bias: Optional[Tensor],
+    running_mean: Tensor,
+    running_var: Tensor,
+    momentum: float,
+    eps: float,
+    cudnn_enabled: bool,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    output, save_mean, save_rstd, _, _ = native_batch_norm_helper(
+        input,
+        weight,
+        bias,
+        running_mean,
+        running_var,
+        True,  # training
+        momentum,
+        eps,
+        False,  # functional
+    )
+    reserve = _get_batch_norm_reserve_tensor(input, weight, bias, running_mean, running_var, eps, cudnn_enabled)
+    return output, save_mean, save_rstd, reserve
+
+
+@register_decomposition(aten._new_batch_norm_no_update.default)
+def _new_batch_norm_no_update(
+    input: Tensor,
+    weight: Optional[Tensor],
+    bias: Optional[Tensor],
+    running_mean: Tensor,
+    running_var: Tensor,
+    momentum: float,
+    eps: float,
+    cudnn_enabled: bool,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    output, save_mean, save_rstd, _, _ = native_batch_norm_helper(
+        input,
+        weight,
+        bias,
+        running_mean,
+        running_var,
+        False,  # training
+        momentum,
+        eps,
+        False,  # functional
+    )
+    reserve = _get_batch_norm_reserve_tensor(input, weight, bias, running_mean, running_var, eps, cudnn_enabled)
+    return output, save_mean, save_rstd, reserve
+
+
 @register_decomposition(aten._fused_dropout)
 @out_wrapper("out0", "out1")
 @pw_cast_for_opmath

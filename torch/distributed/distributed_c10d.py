@@ -1327,6 +1327,21 @@ def _get_split_source(pg):
 
     return split_from
 
+def _shutdown_backend(pg):
+    """
+    Try to shut down the backend of a process group.
+    Currently, only ProcessGroupNCCL backend is supported.
+    No op for other backends.
+    """
+    backend = None
+    try:
+        backend = pg._get_backend(torch.device("cuda"))
+    except RuntimeError:
+        pass
+    if is_nccl_available() and isinstance(backend, ProcessGroupNCCL):
+        # explictly call shutdown to ensure that NCCL resources are released
+        backend.shutdown()
+
 def _new_process_group_helper(
     group_size,
     group_rank,
@@ -1596,6 +1611,11 @@ def destroy_process_group(group: Optional[ProcessGroup] = None):
         pg._wait_for_pending_works()
 
     if group is None or group == GroupMember.WORLD:
+        # shutdown all backends in the order of pg names. shutting down in order because
+        # ncclCommAbort() was a 'collective' call in some versions of NCCL.
+        for pg_to_shutdown in sorted(_world.pg_names, key=lambda x: _world.pg_names[x]):
+            _shutdown_backend(pg_to_shutdown)
+
         _update_default_pg(None)
         _world.pg_map.clear()
         _world.pg_names.clear()
@@ -1617,6 +1637,7 @@ def destroy_process_group(group: Optional[ProcessGroup] = None):
         # process group is in good state, we aren't dealing with failures.
         _world.group_count = 0
     else:
+        _shutdown_backend(pg)
         del _world.pg_map[pg]
         del _world.pg_names[pg]
         del _world.pg_group_ranks[pg]

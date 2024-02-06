@@ -1146,7 +1146,7 @@ class ProcessGroupNCCLTest(MultiProcessTestCase):
         dist.all_reduce(t)
 
         def abortpg():
-            c10d.distributed_c10d._get_default_group()._get_backend(torch.device(device))._shutdown()
+            c10d.distributed_c10d._get_default_group()._get_backend(torch.device(device)).shutdown()
 
         # Initialize DDP to ensure "destroy_process_group" will not call
         # ProcessGroupNCCL destructor since DDP holds a reference to process group.
@@ -1184,15 +1184,9 @@ class ProcessGroupNCCLTest(MultiProcessTestCase):
         # First allreduce to initialize state.
         pg.allreduce(t)
 
-        # Destroy pg and validate pg is still in working condition since we hold a
-        # reference above.
+        # Destroy pg and validate pg is NOT in working condition since
+        # we have shutdown comms
         dist.destroy_process_group()
-        pg.allreduce([t])
-
-        # Now close pg and validate it no longer works.
-        pg._get_backend(torch.device(device))._shutdown()
-
-        # Try another collective.
         with self.assertRaises(dist.DistBackendError):
             pg.allreduce([t])
 
@@ -1224,6 +1218,27 @@ class ProcessGroupNCCLTest(MultiProcessTestCase):
             del new_pg1
             dist.destroy_process_group(new_pg2)
             del new_pg2
+        dist.destroy_process_group()
+
+    @requires_nccl()
+    @skip_but_pass_in_sandcastle_if(torch.cuda.device_count() < 2, "NCCL test requires 2+ GPUs")
+    def test_destroy_multi_pgs(self):
+        store = c10d.FileStore(self.file_name, self.world_size)
+        pg = self._create_process_group_nccl(store, self.opts())
+        device = self.rank_to_GPU[self.rank][0]
+        t = torch.rand(10, 10, device=device)
+        # First allreduce to initialize default PG's communicator.
+        pg.allreduce(t).wait()
+        new_pg1 = c10d.new_group([0, 1])
+        new_pg2 = c10d.new_group([0, 1])
+        t1 = torch.rand(10, 10, device=device)
+        t2 = torch.rand(10, 10, device=device)
+        new_pg1.allreduce(t1).wait()
+        new_pg2.allreduce(t2).wait()
+        backend = pg._get_backend(torch.device(device))
+        # default PG's backend should have a split count of 2
+        self.assertEqual(backend.comm_split_count(), 2)
+        # shutdown all NCCL PGs in one shot
         dist.destroy_process_group()
 
     @requires_nccl()
